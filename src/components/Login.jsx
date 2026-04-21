@@ -13,6 +13,7 @@ function Login({ onLogin }) {
         setError('');
 
         try {
+            // Step 1: Authenticate with Supabase
             const { data, error: signInError } = await supabase.auth.signInWithPassword({
                 email,
                 password
@@ -20,18 +21,53 @@ function Login({ onLogin }) {
 
             if (signInError) throw signInError;
 
-            const { data: guardData } = await supabase
-                .from('guards')
-                .select('*')
-                .eq('id', data.user.id)
+            // Step 2: Get guard details with apartment
+            const { data: guardData, error: guardError } = await supabase
+                .from('apartment_guards')
+                .select(`
+                    *,
+                    apartments:apartment_id (
+                        id,
+                        name,
+                        address
+                    )
+                `)
+                .eq('auth_user_id', data.user.id)
                 .single();
 
+            if (guardError) {
+                console.error('Guard fetch error:', guardError);
+                throw new Error('You are not registered as a security guard');
+            }
+
+            if (!guardData.is_active) {
+                throw new Error('Your account is inactive. Please contact administrator.');
+            }
+
+            if (!guardData.apartments) {
+                throw new Error('No apartment assigned to you.');
+            }
+
+            console.log('✅ Guard logged in:', {
+                name: guardData.name,
+                apartment: guardData.apartments.name
+            });
+
+            // Step 3: Pass guard info to parent
             onLogin({
                 user: data.user,
-                guard: guardData
+                guard: {
+                    id: guardData.id,
+                    name: guardData.name,
+                    email: guardData.email,
+                    phone: guardData.phone,
+                    shift: guardData.shift
+                },
+                apartment: guardData.apartments
             });
 
         } catch (err) {
+            console.error('Login error:', err);
             setError(err.message || 'Invalid email or password');
         } finally {
             setLoading(false);
@@ -43,6 +79,7 @@ function Login({ onLogin }) {
             <div style={styles.card}>
                 <div style={styles.logo}>👮</div>
                 <h1 style={styles.title}>Security Guard Login</h1>
+                <p style={styles.subtitle}>Access your assigned apartment only</p>
                 <form onSubmit={handleSubmit}>
                     <input
                         type="email"
@@ -65,6 +102,7 @@ function Login({ onLogin }) {
                         {loading ? 'Logging in...' : 'Login'}
                     </button>
                 </form>
+                <p style={styles.hint}>Only guards with assigned apartments can login</p>
             </div>
         </div>
     );
@@ -94,9 +132,14 @@ const styles = {
         marginBottom: 20
     },
     title: {
-        marginBottom: 30,
+        marginBottom: 8,
         color: '#333',
         fontSize: 24
+    },
+    subtitle: {
+        marginBottom: 25,
+        color: '#666',
+        fontSize: 14
     },
     input: {
         width: '100%',
@@ -123,6 +166,11 @@ const styles = {
         textAlign: 'center',
         marginBottom: 15,
         fontSize: 14
+    },
+    hint: {
+        marginTop: 20,
+        fontSize: 12,
+        color: '#999'
     }
 };
 
