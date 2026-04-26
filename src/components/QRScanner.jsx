@@ -1,13 +1,11 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { Html5QrcodeScanner } from 'html5-qrcode';
 
 function QRScanner({ onScan, onClose }) {
-    const [error, setError] = useState('');
     const scannerRef = useRef(null);
-    const scannerContainerRef = useRef(null);
 
     useEffect(() => {
-        if (scannerContainerRef.current && !scannerRef.current) {
+        if (scannerRef.current === null) {
             const scanner = new Html5QrcodeScanner(
                 "qr-reader",
                 {
@@ -25,7 +23,7 @@ function QRScanner({ onScan, onClose }) {
                     onScan(decodedText);
                 },
                 (err) => {
-                    // Ignore scanning errors
+                    // Silently ignore scanning errors (no QR found yet)
                     console.log("Scanning...");
                 }
             );
@@ -51,7 +49,6 @@ function QRScanner({ onScan, onClose }) {
                 <div style={styles.scannerContainer}>
                     <div id="qr-reader" style={{ width: '100%' }}></div>
                 </div>
-                {error && <p style={styles.error}>{error}</p>}
                 <button onClick={onClose} style={styles.cancelBtn}>Cancel</button>
             </div>
         </div>
@@ -108,13 +105,6 @@ const styles = {
         fontSize: 16,
         cursor: 'pointer',
         fontWeight: 'bold'
-    },
-    error: {
-        color: 'red',
-        textAlign: 'center',
-        padding: '10px',
-        margin: 0,
-        background: '#ffeeee'
     }
 };
 
