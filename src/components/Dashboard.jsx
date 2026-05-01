@@ -2,21 +2,18 @@ import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
 import { supabase } from '../services/supabase';
 import QRScanner from './QRScanner';
+import NumberPlateScanner from './NumberPlateScanner';
 import './Dashboard.css';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3000';
 
 function Dashboard({ user, onLogout }) {
     const [pendingApprovals, setPendingApprovals] = useState([]);
+    const [residentsInside, setResidentsInside] = useState([]);
     const [visitorsInside, setVisitorsInside] = useState([]);
     const [regularVisitors, setRegularVisitors] = useState([]);
     const [searchTerm, setSearchTerm] = useState('');
     const [searchResults, setSearchResults] = useState([]);
-    const [showVehicleModal, setShowVehicleModal] = useState(false);
-    const [vehicleNumber, setVehicleNumber] = useState('');
-    const [vehicleLoading, setVehicleLoading] = useState(false);
-    const [selectedVisitor, setSelectedVisitor] = useState(null);
-    const [showCheckoutModal, setShowCheckoutModal] = useState(false);
     const [stats, setStats] = useState({
         activeInside: 0,
         todayEntries: 0,
@@ -27,8 +24,12 @@ function Dashboard({ user, onLogout }) {
     const [processingId, setProcessingId] = useState(null);
     const [showDenyModal, setShowDenyModal] = useState(null);
     const [showScanner, setShowScanner] = useState(false);
+    const [showPlateScanner, setShowPlateScanner] = useState(false);
     const [toastMessage, setToastMessage] = useState(null);
+    const [selectedVisitor, setSelectedVisitor] = useState(null);
+    const [showCheckoutModal, setShowCheckoutModal] = useState(false);
     const [activeTab, setActiveTab] = useState('pending');
+    const [isInitialized, setIsInitialized] = useState(false);
 
     const apartment = user?.apartment;
     const apartmentId = apartment?.id;
@@ -39,21 +40,31 @@ function Dashboard({ user, onLogout }) {
     };
 
     const fetchData = useCallback(async () => {
-        if (!apartmentId) return;
+        if (!apartmentId) {
+            setLoading(false);
+            setIsInitialized(true);
+            return;
+        }
         
         try {
+            console.log(`🔄 Fetching data for apartment: ${apartment?.name}`);
+            
             // Fetch pending approvals
             const approvalsRes = await axios.get(`${API_URL}/api/apartments/${apartmentId}/pending-approvals`);
             if (approvalsRes.data.success) {
                 setPendingApprovals(approvalsRes.data.approvals || []);
             }
 
-            // Fetch visitors inside (not residents)
+            // Fetch entry logs
             const entriesRes = await axios.get(`${API_URL}/api/apartments/${apartmentId}/entry-logs?limit=200`);
             if (entriesRes.data.success) {
                 const allLogs = entriesRes.data.logs || [];
                 const activeEntries = allLogs.filter(log => !log.exit_time);
+                
+                const residents = activeEntries.filter(entry => entry.entry_type === 'resident');
                 const visitors = activeEntries.filter(entry => entry.entry_type === 'visitor');
+                
+                setResidentsInside(residents);
                 setVisitorsInside(visitors);
             }
 
@@ -75,25 +86,26 @@ function Dashboard({ user, onLogout }) {
             setError('Failed to connect to server');
         } finally {
             setLoading(false);
+            setIsInitialized(true);
         }
-    }, [apartmentId]);
+    }, [apartmentId, apartment?.name]);
 
     const searchRegularVisitor = async () => {
-    if (!searchTerm.trim()) {
-        setSearchResults([]);
-        return;
-    }
-    
-    try {
-        const response = await axios.get(`${API_URL}/api/apartments/${apartmentId}/regular-visitors/search?q=${encodeURIComponent(searchTerm)}`);
-        if (response.data.success) {
-            setSearchResults(response.data.visitors);
+        if (!searchTerm.trim()) {
+            setSearchResults([]);
+            return;
         }
-    } catch (err) {
-        console.error('Search error:', err);
-        showMessage('Search failed', 'error');
-    }
-};
+        
+        try {
+            const response = await axios.get(`${API_URL}/api/apartments/${apartmentId}/regular-visitors/search?q=${encodeURIComponent(searchTerm)}`);
+            if (response.data.success) {
+                setSearchResults(response.data.visitors);
+            }
+        } catch (err) {
+            console.error('Search error:', err);
+            showMessage('Search failed', 'error');
+        }
+    };
 
     const verifyRegularVisitor = async (visitor) => {
         try {
@@ -112,28 +124,19 @@ function Dashboard({ user, onLogout }) {
         }
     };
 
-    const handleVehicleVerify = async () => {
-        if (!vehicleNumber.trim()) {
-            showMessage('Please enter vehicle number', 'error');
-            return;
-        }
-        
-        setVehicleLoading(true);
+    const handlePlateScan = async (plateNumber) => {
         try {
             const response = await axios.post(`${API_URL}/api/apartments/${apartmentId}/residents/verify-vehicle`, {
-                vehicleNumber,
+                vehicleNumber: plateNumber,
                 guardId: user?.guard?.id || 'guard-001'
             });
             if (response.data.success) {
-                showMessage(`✅ Welcome ${response.data.resident.name}! Entry logged.`);
-                setVehicleNumber('');
-                setShowVehicleModal(false);
+                showMessage(`✅ Welcome ${response.data.resident.name}! (${plateNumber})`);
+                setShowPlateScanner(false);
                 fetchData();
             }
         } catch (err) {
             showMessage(err.response?.data?.error || 'Vehicle not recognized', 'error');
-        } finally {
-            setVehicleLoading(false);
         }
     };
 
@@ -212,12 +215,23 @@ function Dashboard({ user, onLogout }) {
     };
 
     useEffect(() => {
-        fetchData();
-        const interval = setInterval(fetchData, 5000);
-        return () => clearInterval(interval);
-    }, [fetchData]);
+        if (apartmentId) {
+            fetchData();
+        } else if (user?.user?.id) {
+            const timer = setTimeout(() => {
+                if (!apartmentId && !isInitialized) {
+                    setError('No apartment assigned. Please contact administrator.');
+                    setLoading(false);
+                    setIsInitialized(true);
+                }
+            }, 3000);
+            return () => clearTimeout(timer);
+        } else {
+            setLoading(false);
+            setIsInitialized(true);
+        }
+    }, [apartmentId, fetchData, user?.user?.id, isInitialized]);
 
-    // Real-time subscription
     useEffect(() => {
         if (!apartmentId) return;
         
@@ -256,7 +270,9 @@ function Dashboard({ user, onLogout }) {
         );
     };
 
-    if (loading) return <div className="loading-container"><div className="spinner"></div><p>Loading...</p></div>;
+    if (loading || !isInitialized) {
+        return <div className="loading-container"><div className="spinner"></div><p>Loading...</p></div>;
+    }
 
     if (!apartment) {
         return (
@@ -267,6 +283,8 @@ function Dashboard({ user, onLogout }) {
             </div>
         );
     }
+
+    const totalInside = residentsInside.length + visitorsInside.length;
 
     return (
         <div className="guard-dashboard">
@@ -282,23 +300,26 @@ function Dashboard({ user, onLogout }) {
                 <button onClick={onLogout} className="btn-logout">Logout</button>
             </div>
 
+            {/* Toast */}
+            {toastMessage && <div className={`toast ${toastMessage.type}`}>{toastMessage.msg}</div>}
+
             {/* Stats Cards */}
             <div className="stats-row">
                 <div className="stat-card"><span className="stat-value">{pendingApprovals.length}</span><span className="stat-label">Pending</span></div>
-                <div className="stat-card"><span className="stat-value">{visitorsInside.length}</span><span className="stat-label">Visitors Inside</span></div>
+                <div className="stat-card"><span className="stat-value">{totalInside}</span><span className="stat-label">Total Inside</span></div>
                 <div className="stat-card"><span className="stat-value">{stats.todayEntries}</span><span className="stat-label">Today's Entries</span></div>
             </div>
 
             {/* Action Buttons */}
             <div className="action-row">
                 <button onClick={() => setShowScanner(true)} className="btn-scan">📷 Scan QR Code</button>
-                <button onClick={() => setShowVehicleModal(true)} className="btn-vehicle">🚗 Vehicle Entry</button>
+                <button onClick={() => setShowPlateScanner(true)} className="btn-vehicle">🚗 Scan Number Plate</button>
             </div>
 
             {/* Tabs */}
             <div className="tabs">
                 <button className={`tab ${activeTab === 'pending' ? 'active' : ''}`} onClick={() => setActiveTab('pending')}>Pending Approvals</button>
-                <button className={`tab ${activeTab === 'inside' ? 'active' : ''}`} onClick={() => setActiveTab('inside')}>Visitors Inside</button>
+                <button className={`tab ${activeTab === 'inside' ? 'active' : ''}`} onClick={() => setActiveTab('inside')}>Currently Inside</button>
                 <button className={`tab ${activeTab === 'regular' ? 'active' : ''}`} onClick={() => setActiveTab('regular')}>Regular Visitors</button>
             </div>
 
@@ -327,24 +348,50 @@ function Dashboard({ user, onLogout }) {
                 </div>
             )}
 
-            {/* Visitors Inside Tab */}
+            {/* Currently Inside Tab */}
             {activeTab === 'inside' && (
                 <div className="tab-content">
-                    {visitorsInside.length === 0 ? (
-                        <div className="empty-state">No visitors inside</div>
+                    {totalInside === 0 ? (
+                        <div className="empty-state">No one inside</div>
                     ) : (
-                        visitorsInside.map(visitor => (
-                            <div key={visitor.id} className="visitor-card">
-                                <div className="visitor-info">
-                                    <h4>{visitor.person_name}</h4>
-                                    <p>📱 {visitor.person_phone || 'N/A'}</p>
-                                    <p>🏠 Flat {visitor.flat_number}</p>
-                                    {visitor.purpose && <p>📦 Purpose: {visitor.purpose}</p>}
-                                    <p>⏰ Entered: {new Date(visitor.entry_time).toLocaleTimeString()}</p>
+                        <>
+                            {/* Residents Inside */}
+                            {residentsInside.length > 0 && (
+                                <div className="sub-section">
+                                    <h3 className="sub-title">🏠 Residents ({residentsInside.length})</h3>
+                                    {residentsInside.map(entry => (
+                                        <div key={entry.id} className="visitor-card">
+                                            <div className="visitor-info">
+                                                <h4>{entry.person_name}</h4>
+                                                <p>🏠 Flat {entry.flat_number}</p>
+                                                {entry.vehicle_number && <p>🚗 {entry.vehicle_number}</p>}
+                                                <p>⏰ Entered: {new Date(entry.entry_time).toLocaleTimeString()}</p>
+                                            </div>
+                                            <button onClick={() => { setSelectedVisitor(entry); setShowCheckoutModal(true); }} className="btn-exit">Exit</button>
+                                        </div>
+                                    ))}
                                 </div>
-                                <button onClick={() => { setSelectedVisitor(visitor); setShowCheckoutModal(true); }} className="btn-exit">Exit</button>
-                            </div>
-                        ))
+                            )}
+
+                            {/* Visitors Inside */}
+                            {visitorsInside.length > 0 && (
+                                <div className="sub-section">
+                                    <h3 className="sub-title">👤 Visitors ({visitorsInside.length})</h3>
+                                    {visitorsInside.map(visitor => (
+                                        <div key={visitor.id} className="visitor-card">
+                                            <div className="visitor-info">
+                                                <h4>{visitor.person_name}</h4>
+                                                <p>📱 {visitor.person_phone || 'N/A'}</p>
+                                                <p>🏠 Flat {visitor.flat_number}</p>
+                                                {visitor.purpose && <p>📦 Purpose: {visitor.purpose}</p>}
+                                                <p>⏰ Entered: {new Date(visitor.entry_time).toLocaleTimeString()}</p>
+                                            </div>
+                                            <button onClick={() => { setSelectedVisitor(visitor); setShowCheckoutModal(true); }} className="btn-exit">Exit</button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </>
                     )}
                 </div>
             )}
@@ -358,12 +405,16 @@ function Dashboard({ user, onLogout }) {
                     </div>
                     {searchResults.length > 0 && (
                         <div className="search-results">
+                            <h3 className="sub-title">Search Results</h3>
                             {searchResults.map(visitor => (
                                 <div key={visitor.id} className="visitor-card">
                                     <div className="visitor-info">
                                         <h4>{visitor.name}</h4>
                                         <p>📱 {visitor.phone}</p>
-                                        <p>🔄 Total visits: {visitor.total_visits}</p>
+                                        {visitor.purpose && <p>📦 Purpose: {visitor.purpose}</p>}
+                                        {visitor.days?.length > 0 && <p>📅 Days: {visitor.days.join(', ')}</p>}
+                                        {visitor.visit_time && <p>⏰ Time: {visitor.visit_time}</p>}
+                                        <p>🔄 Total visits: {visitor.total_visits || 0}</p>
                                     </div>
                                     <button onClick={() => verifyRegularVisitor(visitor)} className="btn-verify">Verify & Let In</button>
                                 </div>
@@ -371,25 +422,35 @@ function Dashboard({ user, onLogout }) {
                         </div>
                     )}
                     {searchTerm && searchResults.length === 0 && <div className="empty-state">No regular visitors found</div>}
+                    {!searchTerm && (
+                        <div className="regular-list">
+                            <h3 className="sub-title">All Regular Visitors</h3>
+                            {regularVisitors.length === 0 ? (
+                                <div className="empty-state">No regular visitors added yet</div>
+                            ) : (
+                                regularVisitors.map(visitor => (
+                                    <div key={visitor.id} className="visitor-card">
+                                        <div className="visitor-info">
+                                            <h4>{visitor.name}</h4>
+                                            <p>📱 {visitor.phone}</p>
+                                            {visitor.purpose && <p>📦 Purpose: {visitor.purpose}</p>}
+                                            {visitor.days?.length > 0 && <p>📅 Days: {visitor.days.join(', ')}</p>}
+                                            {visitor.visit_time && <p>⏰ Time: {visitor.visit_time}</p>}
+                                        </div>
+                                        <button onClick={() => verifyRegularVisitor(visitor)} className="btn-verify">Verify & Let In</button>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    )}
                 </div>
             )}
 
             {/* QR Scanner Modal */}
             {showScanner && <QRScanner onScan={handleQRScan} onClose={() => setShowScanner(false)} />}
 
-            {/* Vehicle Entry Modal */}
-            {showVehicleModal && (
-                <div className="modal-overlay" onClick={() => setShowVehicleModal(false)}>
-                    <div className="modal-content" onClick={e => e.stopPropagation()}>
-                        <h3>🚗 Vehicle Entry</h3>
-                        <input type="text" placeholder="Enter vehicle number (e.g., KA-01-AB-1234)" value={vehicleNumber} onChange={e => setVehicleNumber(e.target.value.toUpperCase())} autoFocus />
-                        <div className="modal-buttons">
-                            <button className="btn-secondary" onClick={() => setShowVehicleModal(false)}>Cancel</button>
-                            <button className="btn-primary" onClick={handleVehicleVerify} disabled={vehicleLoading}>{vehicleLoading ? 'Verifying...' : 'Verify Entry'}</button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            {/* Number Plate Scanner Modal */}
+            {showPlateScanner && <NumberPlateScanner onScan={handlePlateScan} onClose={() => setShowPlateScanner(false)} />}
 
             {/* Checkout Modal */}
             {showCheckoutModal && selectedVisitor && (
@@ -407,9 +468,6 @@ function Dashboard({ user, onLogout }) {
 
             {/* Deny Modal */}
             {showDenyModal && <DenyModal approval={showDenyModal} onClose={() => setShowDenyModal(null)} onConfirm={handleDeny} />}
-
-            {/* Toast */}
-            {toastMessage && <div className={`toast ${toastMessage.type}`}>{toastMessage.msg}</div>}
         </div>
     );
 }
